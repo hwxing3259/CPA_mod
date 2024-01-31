@@ -6,6 +6,6 @@ pandas
 scanpy 
 scipy 
 seaborn 
-sklearn
+scikit-learn
 submitit
 torch
