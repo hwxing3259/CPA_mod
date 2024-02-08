@@ -1429,6 +1429,110 @@ class API:
                     icond += 1
         return scores
 
+    def evaluate_r2_mod(self, dataset, genes_control, adata_random=None):
+        """
+        Measures different quality metrics about an CPA `autoencoder`, when
+        tasked to translate some `genes_control` into each of the drug/cell_type
+        combinations described in `dataset`.
+
+        Considered metrics are R2 score about means and variances for all genes, as
+        well as R2 score about means and variances about differentially expressed
+        (_de) genes.
+        """
+        self.model.eval()
+        scores = pd.DataFrame(
+            columns=self.covariate_keys
+            + [
+                self.perturbation_key,
+                self.dose_key,
+                "R2_mean",
+                "R2_mean_DE",
+                "R2_var",
+                "R2_var_DE",
+                "model",
+                "num_cells",
+            ]
+        )
+
+        num, dim = genes_control.size(0), genes_control.size(1)
+
+        total_cells = len(dataset)
+        store_true = {}
+        store_pred = {}
+        icond = 0
+        for pert_category in np.unique(dataset.pert_categories):
+            # pert_category category contains: 'celltype_perturbation_dose' info
+            de_idx = np.where(
+                dataset.var_names.isin(np.array(dataset.de_genes[pert_category]))
+            )[0]
+
+            idx = np.where(dataset.pert_categories == pert_category)[0]
+            *covars, pert, dose = pert_category.split("_")
+            cov_dict = {}
+            for i, cov_key in enumerate(self.covariate_keys):
+                cov_dict[cov_key] = [covars[i]]
+
+            if len(idx) > 0:
+                mean_predict, var_predict, _ = self.predict(
+                    genes_control,
+                    cov=cov_dict,
+                    pert=[pert],
+                    dose=[dose],
+                    return_anndata=False,
+                    sample=False,
+                )
+
+                # estimate metrics only for reasonably-sized drug/cell-type combos
+                y_true = dataset.genes[idx, :].numpy()
+
+                # true means and variances
+                yt_m = y_true.mean(axis=0)
+                yt_v = y_true.var(axis=0)
+                # predicted means and variances
+                yp_m = mean_predict.mean(0)
+                yp_v = var_predict.mean(0)
+                #yp_v = np.var(mean_predict, axis=0)
+
+                mean_score = r2_score(yt_m, yp_m)
+                var_score = r2_score(yt_v, yp_v)
+                store_true[pert_category] = y_true
+                store_pred[pert_category] = mean_predict
+
+                mean_score_de = r2_score(yt_m[de_idx], yp_m[de_idx])
+                var_score_de = r2_score(yt_v[de_idx], yp_v[de_idx])
+
+                scores.loc[icond] = pert_category.split("_") + [
+                    mean_score,
+                    mean_score_de,
+                    var_score,
+                    var_score_de,
+                    "cpa",
+                    len(idx),
+                ]
+                icond += 1
+                if adata_random is not None:
+                    yp_m_bl = np.mean(adata_random, axis=0)
+                    yp_v_bl = np.var(adata_random, axis=0)
+
+                    mean_score_bl = r2_score(yt_m, yp_m_bl)
+                    var_score_bl = r2_score(yt_v, yp_v_bl)
+
+                    mean_score_de_bl = r2_score(yt_m[de_idx], yp_m_bl[de_idx])
+                    var_score_de_bl = r2_score(yt_v[de_idx], yp_v_bl[de_idx])
+
+
+                    scores.loc[icond] = pert_category.split("_") + [
+                        mean_score_bl,
+                        mean_score_de_bl,
+                        var_score_bl,
+                        var_score_de_bl,
+                        "baseline",
+                        len(idx),
+                    ]
+                    icond += 1
+        return scores, store_true, store_pred
+        
+
 def get_reference_from_combo(perturbations_list, datasets, splits=["training", "ood"]):
     """
     A simple function that produces a pd.DataFrame of individual
